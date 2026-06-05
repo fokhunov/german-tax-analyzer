@@ -1,0 +1,29 @@
+# ── OS / editor noise ──────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# ── Python ─────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# ── Personal tax data — NEVER commit ───────────────────────────
+# Real tax-year folders (2022/, 2023/, 2024/, 2025/, …) hold private
+# documents: source PDFs, extracted facts.json, and reports.
+# Only the 20xx/ example structure is tracked.
+/20[0-9][0-9]/
+
+# Safety net: never leak a tax PDF from anywhere in the repo.
+*.pdf
+
+# Defense-in-depth: never commit derived tax artifacts from anywhere,
+# even if they ever land outside a year folder.
+*_facts.json
+*_report*.html
+
+# What IS committed: README.md, CLAUDE.md, the .claude/ skills & agents
+# (which now hold pdf_triage.py + facts.schema.json), and the 20xx/ example.

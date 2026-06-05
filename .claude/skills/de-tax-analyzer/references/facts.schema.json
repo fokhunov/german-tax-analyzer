@@ -1,0 +1,391 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://de-taxes/facts.schema.json",
+  "title": "DE-Taxes Facts",
+  "version": "2.2",
+  "description": "One file per source document (any German tax document: declaration, Bescheid, request letter, advance-payment notice, etc.). Unified schema so related documents can be joined and compared. Every monetary line carries declared/accepted/difference, a source location, and a confidence level. v2.1 adds a first-class 'explanations' array for the Finanzamt's narrative paragraphs (Erläuterungen + Rechtsbehelfsbelehrung), each with German original + English translation. v2.2 adds: 'document.bundled_documents[]' (one PDF can contain several Bescheide, e.g. ESt + Verlustfeststellung); 'result.abrechnung' (per-tax festgesetzt/vorausgezahlt/verbleibend + offset, so a netted refund across ESt and Soli is not lossy); 'result.verlustvortrag'; and a first-class 'calculation_chain.abgeltungsteuer' sub-chain for §32d capital-income tax. EDGE-CASE / FORWARD-COMPAT DESIGN: enums are open-ended via paired '*_other' free fields and a 'sonstiges' catch-all; each object has an 'extensions' bag (additionalProperties:true) so novel facts never fail validation. Use 'extensions' for anything the schema doesn't model yet, and graduate frequently-used keys into the schema later.",
+  "type": "object",
+  "required": ["meta", "document", "linkage", "confidence"],
+  "additionalProperties": false,
+  "properties": {
+
+    "schema_version": { "type": "string", "default": "2.2", "description": "Schema version this file targets." },
+
+    "meta": {
+      "description": "Provenance of THIS extraction (not tax content).",
+      "type": "object",
+      "required": ["source_file", "document_role", "extraction_method", "extraction_date"],
+      "additionalProperties": false,
+      "properties": {
+        "source_file": { "type": "string" },
+        "document_role": { "type": "string", "description": "declaration | bescheid | aenderungsbescheid | request | vorauszahlung | other. Free string so new roles don't break validation; prefer these values." },
+        "extraction_method": { "enum": ["text", "ocr", "mixed", "manual"] },
+        "ocr_language": { "type": ["string", "null"] },
+        "triage_verdict": { "enum": ["TEXT", "SCAN", "MIXED", null] },
+        "pages": { "type": ["integer", "null"] },
+        "extraction_date": { "type": "string", "format": "date" },
+        "extensions": { "type": "object", "additionalProperties": true }
+      }
+    },
+
+    "document": {
+      "description": "Identity of the document and the parties.",
+      "type": "object",
+      "required": ["doc_type", "tax_year"],
+      "additionalProperties": false,
+      "properties": {
+        "doc_type": {
+          "description": "Prefer a known value; if none fits use 'Sonstiges' and set doc_type_other.",
+          "enum": ["Einkommensteuererklaerung", "Einkommensteuerbescheid", "Aenderungsbescheid",
+                   "Einspruchsentscheidung", "Aufforderung_zur_Mitwirkung", "Nachweisanforderung",
+                   "Vorauszahlungsbescheid", "Vollstreckungsmitteilung", "Verlustfeststellungsbescheid",
+                   "Zinsbescheid", "Umsatzsteuerbescheid", "Gewerbesteuerbescheid", "Mahnung", "Sonstiges"]
+        },
+        "doc_type_other": { "type": ["string", "null"], "description": "Free text when doc_type = 'Sonstiges'." },
+        "doc_type_confidence": { "enum": ["high", "medium", "low"] },
+        "tax_year": { "type": ["integer", "null"], "description": "Veranlagungszeitraum — the year the tax relates to, NOT the filename or issue year. May be null for non-year-specific letters." },
+        "related_tax_years": { "type": "array", "items": { "type": "integer" }, "description": "Other years the document references, e.g. Verlustvortrag/-rücktrag." },
+        "issue_date": { "type": ["string", "null"] },
+        "submission_timestamp": { "type": ["string", "null"], "description": "KEY linkage field (declaration transmit time / the timestamp a Bescheid cites)." },
+        "estimated": { "type": ["boolean", "null"], "description": "True if assessed by estimation (Schätzung, § 162 AO)." },
+        "finanzamt": { "type": ["string", "null"] },
+        "steuernummer": { "type": ["string", "null"] },
+        "idnr": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "ehemann": { "type": ["string", "null"] },
+            "ehefrau": { "type": ["string", "null"] },
+            "steuerpflichtige_person": { "type": ["string", "null"], "description": "Use for single filers / non-married." }
+          }
+        },
+        "taxpayers": { "type": "array", "items": { "type": "string" } },
+        "veranlagungsart": { "enum": ["Zusammenveranlagung", "Einzelveranlagung", "getrennte_Veranlagung", null] },
+        "steuerklassenkombination": { "type": ["string", "null"] },
+        "bank": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "iban_masked": { "type": ["string", "null"], "description": "Mask all but last 4 digits." },
+            "institut": { "type": ["string", "null"] }
+          }
+        },
+        "provisional": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "scope": { "type": "string" },
+              "legal_basis": { "type": "string" }
+            }
+          }
+        },
+        "bundled_documents": {
+          "description": "Other distinct Bescheide printed inside the SAME PDF as this one (e.g. an Einkommensteuerbescheid that also carries a Verlustfeststellungsbescheid). 'doc_type' above describes the primary notice; list the secondary notices here. Each entry keeps its own key figures so it can be compared/audited without a separate file.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["doc_type"],
+            "additionalProperties": false,
+            "properties": {
+              "doc_type": { "type": "string", "description": "Prefer a value from document.doc_type's enum; free string so new types don't break validation." },
+              "title": { "type": ["string", "null"], "description": "Heading as printed, e.g. 'Bescheid über die gesonderte Feststellung des verbleibenden Verlustvortrags ... auf den 31.12.2023'." },
+              "tax_year": { "type": ["integer", "null"] },
+              "addressee": { "type": ["string", "null"] },
+              "legal_basis": { "type": ["string", "null"] },
+              "pages": { "type": ["string", "null"], "description": "Page range within the PDF, e.g. '7-8'." },
+              "key_values": { "type": "object", "additionalProperties": true, "description": "The notice's headline figures, e.g. {\"verbleibender_verlustvortrag_31_12_2023\": 67}." },
+              "source": { "$ref": "#/$defs/source" }
+            }
+          }
+        },
+        "extensions": { "type": "object", "additionalProperties": true }
+      }
+    },
+
+    "linkage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "tax_year": { "type": ["integer", "null"] },
+        "steuernummer": { "type": ["string", "null"] },
+        "submission_timestamp": { "type": ["string", "null"] },
+        "related_documents": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "file": { "type": "string" },
+              "role": { "type": "string" },
+              "match_basis": { "type": "string" }
+            }
+          }
+        },
+        "extensions": { "type": "object", "additionalProperties": true }
+      }
+    },
+
+    "deadlines": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "type": { "type": "string", "description": "einspruch | zahlung | nachweis | sonstiges." },
+          "date": { "type": ["string", "null"] },
+          "basis": { "type": "string" },
+          "expired": { "type": ["boolean", "null"] }
+        }
+      }
+    },
+
+    "result": {
+      "description": "Top-line outcome. All fields optional — a non-financial document (e.g. a document request) leaves them null.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "einkommensteuer": { "type": ["number", "null"] },
+        "solidaritaetszuschlag": { "type": ["number", "null"] },
+        "kirchensteuer": { "type": ["number", "null"] },
+        "verlustvortrag": { "type": ["number", "null"], "description": "Remaining loss carryforward fixed by/with this assessment (§ 10d EStG), e.g. share-disposal losses. If carried in a bundled Verlustfeststellungsbescheid, also list it under document.bundled_documents." },
+        "zinsen_233a": { "type": ["number", "null"], "description": "Interest under § 233a AO." },
+        "verspaetungszuschlag": { "type": ["number", "null"] },
+        "saeumniszuschlag": { "type": ["number", "null"] },
+        "currency": { "type": "string", "default": "EUR" },
+        "abrechnung": {
+          "description": "Settlement / Abrechnung block: per-tax festgesetzt vs already paid vs verbleibend, and any cross-tax offset (Verrechnung). Use this when a refund nets several taxes against each other (e.g. an ESt refund reduced by a Soli payment) so 'refund_or_payment' alone is not lossy.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "stichtag": { "type": ["string", "null"], "description": "Abrechnung cut-off date." },
+            "per_tax": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "tax": { "type": "string", "description": "e.g. 'Einkommensteuer', 'Solidaritaetszuschlag', 'Kirchensteuer'." },
+                  "festgesetzt": { "type": ["number", "null"] },
+                  "vorausgezahlt": { "type": ["number", "null"], "description": "Already paid (e.g. Steuerabzug vom Lohn / Vorauszahlungen)." },
+                  "verbleibend": { "type": ["number", "null"], "description": "Remaining: negative = refund to taxpayer, positive = taxpayer owes." }
+                }
+              }
+            },
+            "verrechnung": { "type": ["string", "null"], "description": "How taxes were offset against each other." },
+            "auszahlung": { "type": ["number", "null"], "description": "Net amount actually paid out (Guthaben) after offset." }
+          }
+        },
+        "refund_or_payment": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "amount": { "type": ["number", "null"] },
+            "currency": { "type": "string", "default": "EUR" },
+            "direction": { "enum": ["refund", "payment", "none", null] }
+          }
+        },
+        "vorauszahlungen": {
+          "description": "Advance-payment schedule (Vorauszahlungsbescheid).",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "period": { "type": "string", "description": "e.g. '2026-Q1' or '10.03.2026'." },
+              "tax": { "type": "string", "description": "Which tax, e.g. 'Einkommensteuer'." },
+              "amount": { "type": "number" },
+              "due_date": { "type": ["string", "null"] }
+            }
+          }
+        },
+        "extensions": { "type": "object", "additionalProperties": true }
+      }
+    },
+
+    "line_items": {
+      "description": "CORE. Every monetary/quantity line, unified. declaration -> 'declared' filled; bescheid -> 'accepted' filled; a merge fills both. Unknown line types use category 'sonstiges' + a descriptive label/subcategory.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/line_item" }
+    },
+
+    "calculation_chain": {
+      "description": "Ordered, recomputable steps. Add sub-chains as needed (einkommensteuer, solidaritaetszuschlag, or any custom key via 'other').",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "einkommensteuer": { "type": "array", "items": { "$ref": "#/$defs/calc_step" } },
+        "solidaritaetszuschlag": { "type": "array", "items": { "$ref": "#/$defs/calc_step" } },
+        "abgeltungsteuer": { "type": "array", "items": { "$ref": "#/$defs/calc_step" }, "description": "§ 32d Abs. 1 capital-income tax track: Kapitalertraege − Sparer-Pauschbetrag → 25 % − Anrechnung auslaendischer Steuern. Has its own solidarity surcharge (no Freigrenze)." },
+        "kirchensteuer": { "type": "array", "items": { "$ref": "#/$defs/calc_step" } },
+        "other": {
+          "description": "Named chains for any other computation (e.g. 'verlustvortrag', 'gewerbesteuer').",
+          "type": "object",
+          "additionalProperties": { "type": "array", "items": { "$ref": "#/$defs/calc_step" } }
+        }
+      }
+    },
+
+    "adjustments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["item", "reason"],
+        "additionalProperties": false,
+        "properties": {
+          "item": { "type": "string" },
+          "person": { "$ref": "#/$defs/person" },
+          "declared": { "type": ["number", "null"] },
+          "accepted": { "type": ["number", "null"] },
+          "difference": { "type": ["number", "null"] },
+          "reason": { "type": "string" },
+          "legal_basis": { "type": ["string", "null"] },
+          "source": { "$ref": "#/$defs/source" },
+          "confidence": { "enum": ["high", "medium", "low"] }
+        }
+      }
+    },
+
+    "legal_references": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "citation": { "type": "string" },
+          "context": { "type": "string" },
+          "source": { "$ref": "#/$defs/source" }
+        }
+      }
+    },
+
+    "explanations": {
+      "description": "The Finanzamt's narrative paragraphs (Erläuterungen zur Festsetzung, Vorläufigkeitsvermerk, Rechtsbehelfsbelehrung) or a declaration's free-text notes. Each item keeps the German original AND an English translation, plus an optional pointer to the line_item/field it explains. Translations are for comprehension, not certified.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["german"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "description": "Stable label, e.g. 'E11'." },
+          "topic": { "type": ["string", "null"], "description": "Short subject, e.g. 'Progressionsvorbehalt'." },
+          "german": { "type": "string", "description": "Original text as printed (verbatim or lightly cleaned of OCR noise)." },
+          "english": { "type": ["string", "null"], "description": "English translation (uncertified)." },
+          "maps_to": { "type": ["string", "null"], "description": "Pointer to the related line_item id or field path, e.g. 'wk.homeoffice.ehemann' or 'document.provisional'." },
+          "legal_basis": { "type": ["string", "null"] },
+          "source": { "$ref": "#/$defs/source" },
+          "extensions": { "type": "object", "additionalProperties": true }
+        }
+      }
+    },
+
+    "attachments": {
+      "description": "Anlagen / enclosures detected in the document, e.g. ['Anlage N','Anlage KAP','Anlage Kind'].",
+      "type": "array",
+      "items": { "type": "string" }
+    },
+
+    "validation_flags": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "field": { "type": "string" },
+          "issue": { "type": "string" },
+          "severity": { "enum": ["info", "warning", "error"] }
+        }
+      }
+    },
+
+    "confidence": {
+      "type": "object",
+      "required": ["overall"],
+      "additionalProperties": false,
+      "properties": {
+        "ocr": { "enum": ["high", "medium", "low", "n/a"] },
+        "calculation": { "enum": ["high", "medium", "low", "n/a"] },
+        "legal": { "enum": ["high", "medium", "low", "n/a"] },
+        "overall": { "enum": ["high", "medium", "low"] }
+      }
+    },
+
+    "open_questions": { "type": "array", "items": { "type": "string" } },
+
+    "extensions": {
+      "description": "Top-level escape hatch for facts the schema doesn't model yet. Anything goes here without failing validation.",
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+
+  "$defs": {
+
+    "person": {
+      "description": "Who the line belongs to. Marriage cases: ehemann/ehefrau/insgesamt. Single filer: steuerpflichtige_person. Generic/neutral: person_a/person_b. Also: kind, unterstuetzte_person (§33a), sonstige.",
+      "enum": ["ehemann", "ehefrau", "insgesamt", "steuerpflichtige_person",
+               "person_a", "person_b", "kind", "unterstuetzte_person", "sonstige"]
+    },
+
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "page": { "type": ["integer", "null"] },
+        "anlage": { "type": ["string", "null"] },
+        "zeile": { "type": ["string", "null"] },
+        "quote": { "type": ["string", "null"] }
+      }
+    },
+
+    "line_item": {
+      "type": "object",
+      "required": ["category", "label", "person"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "description": "Stable slug for joining across files, e.g. 'wk.arbeitsmittel.ehemann'." },
+        "category": {
+          "description": "Coarse bucket. If none fits, use 'sonstiges' and describe via subcategory/label.",
+          "enum": ["income", "werbungskosten", "vorsorgeaufwendungen", "sonderausgaben",
+                   "aussergewoehnliche_belastung", "steuerermaessigung", "freibetrag",
+                   "progressionsvorbehalt", "tarif", "anrechnung", "vorauszahlung",
+                   "zinsen", "zuschlag", "verlust", "sonstiges"]
+        },
+        "subcategory": { "type": ["string", "null"], "description": "Finer type, e.g. 'kapitalvermoegen', 'vermietung', 'renten', 'auslandseinkuenfte', 'selbststaendig'. Free text." },
+        "label": { "type": "string", "description": "German label as printed." },
+        "label_en": { "type": ["string", "null"] },
+        "person": { "$ref": "#/$defs/person" },
+        "declared": { "type": ["number", "null"] },
+        "accepted": { "type": ["number", "null"] },
+        "difference": { "type": ["number", "null"] },
+        "unit": { "enum": ["amount", "EUR", "days", "km", "percent", "count"], "default": "amount", "description": "'amount' = monetary in 'currency'. ('EUR' retained for back-compat.)" },
+        "currency": { "type": "string", "default": "EUR", "description": "Set for foreign-currency amounts, e.g. 'USD' for broker income." },
+        "raw_value": { "type": ["string", "null"], "description": "Literal string as extracted, e.g. '1.500,00 €' — keeps OCR separator audit possible." },
+        "components": { "type": "array", "items": { "$ref": "#/$defs/line_item" } },
+        "legal_basis": { "type": ["string", "null"] },
+        "source": { "$ref": "#/$defs/source" },
+        "confidence": { "enum": ["high", "medium", "low"] },
+        "note": { "type": ["string", "null"] },
+        "extensions": { "type": "object", "additionalProperties": true }
+      }
+    },
+
+    "calc_step": {
+      "type": "object",
+      "required": ["step", "label", "value"],
+      "additionalProperties": false,
+      "properties": {
+        "step": { "type": "integer" },
+        "label": { "type": "string" },
+        "operation": { "enum": ["base", "add", "subtract", "multiply", "divide", "cap", "floor", "round", "result"] },
+        "inputs": { "type": "array", "items": { "type": ["number", "string"] } },
+        "value": { "type": "number", "description": "Value AS PRINTED." },
+        "computed_value": { "type": ["number", "null"], "description": "Value RE-DERIVED in code." },
+        "verified": { "type": ["boolean", "null"] },
+        "raw_value": { "type": ["string", "null"] },
+        "source": { "$ref": "#/$defs/source" }
+      }
+    }
+  }
+}

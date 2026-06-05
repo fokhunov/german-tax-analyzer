@@ -1,0 +1,6 @@
+# Placeholder so Git tracks the empty 20xx/source/ folder.
+# 20xx/ is the example layout for one tax year:
+#   20xx/source/        raw inputs — declaration + Bescheid PDFs (put real PDFs here)
+#   20xx/20xx_facts.json   extracted, verified data
+#   20xx/20xx_report.html  interactive report
+# Copy this folder to a real year (e.g. 2026/) to start; real year folders are gitignored.
